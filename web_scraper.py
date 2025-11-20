@@ -2,13 +2,11 @@ import requests
 from bs4 import BeautifulSoup
 import time
 from typing import List, Tuple, Optional, Dict, Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, parse_qs, urlparse
 import pandas as pd
 import re
 
-
-# --- Helper Function for Single Page Scraping ---
-
+# Helper function to parse ratings from restaurant card
 def _parse_rating(rating_span) -> str:
     rating_text = "No Rating"
     if rating_span:
@@ -26,13 +24,75 @@ def _parse_rating(rating_span) -> str:
 
     return rating_text
 
+# Helper function to parse the price and cuisine from restaurant card
 def _parse_price_cuisine(footer):
     raw_text = footer.get_text()
     # Remove /n
     cleaned_text = re.sub(r'\s+', ' ', raw_text).strip().replace(" ","").split('·')
     return cleaned_text[0], cleaned_text[1]
 
-def _scrape_single_page(url: str, headers: dict) -> Tuple[List[Dict[str, str]], Optional[str]]:
+# Helper function to parse google maps iframe in restaurant page
+def _scrape_gm_iframe_url(url: str):
+    # Parse url
+    parsed_url = urlparse(url)
+
+    # Extract the query parameters into a dictionary
+    query_params = parse_qs(parsed_url.query)
+
+    if 'q' in query_params:
+        # 3. Get the value of the 'query' key and split it
+        lat_lon_string = query_params['q'][0]
+        lat_lon = lat_lon_string.split(',')
+
+        latitude = float(lat_lon[0])
+        longitude = float(lat_lon[1])
+    else:
+        latitude, longitude = "", ""
+
+    return latitude, longitude
+
+# Helper function to scrape data from restaurant page
+def _scrape_restaurant_page(url: str, headers: dict):
+    print(f"\tScraping restaurant page: {url}")
+
+    # Query URL
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"\tError fetching page: {e}")
+        return {
+            "Address": "",
+            "Description": "",
+            "Coordinates": "",
+            "Website URL": ""
+        }
+
+    # Initialize parser
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    # Get address
+    address_tag = soup.select_one('div.data-sheet__block--text')
+    address = address_tag.get_text(strip=True) if address_tag else ""
+
+    # Get description
+    description_tag = soup.select_one('div.data-sheet__description')
+    description = description_tag.get_text(strip=True) if description_tag else ""
+
+    # Get coordinates
+    iframe_url = soup.select('iframe')[1]['src']
+    latitude, longitude = _scrape_gm_iframe_url(iframe_url)
+
+    return {
+        "Address": address,
+        "Description": description,
+        "Latitude": latitude,
+        "Longitude": longitude,
+        "Website URL": ""
+    }
+
+# Helper function to scrape data from a single web page
+def _scrape_results_single_page(url: str, headers: dict) -> Tuple[List[Dict[str, str]], Optional[str]]:
     """
     Helper function to scrape restaurant data and find the next page URL.
     Returns: (List of restaurant dictionaries, Next page URL or None)
@@ -53,7 +113,7 @@ def _scrape_single_page(url: str, headers: dict) -> Tuple[List[Dict[str, str]], 
 
     # 1. Identify all restaurant cards (The anchor tag containing all details)
     # This selector targets the main link element for each restaurant card.
-    restaurant_cards = soup.select('div.card__menu-content')
+    restaurant_cards = soup.select('div.card__menu')
 
     if not restaurant_cards:
         print("No restaurant cards found. Stopping page scrape.")
@@ -61,7 +121,7 @@ def _scrape_single_page(url: str, headers: dict) -> Tuple[List[Dict[str, str]], 
     for card in restaurant_cards:
         # Parse name
         name_tag = card.select_one('h3.card__menu-content--title')
-        name = name_tag.get_text(strip=True) if name_tag else "N/A"
+        name = name_tag.get_text(strip=True) if name_tag else ""
 
         # Parse footer
         footer = card.select('div.card__menu-footer--score')
@@ -73,6 +133,8 @@ def _scrape_single_page(url: str, headers: dict) -> Tuple[List[Dict[str, str]], 
         rating = _parse_rating(rating_span)
 
         # Parse restaurant URL
+        restaurant_url = "https://guide.michelin.com" + card.select_one('a')['href']
+        restaurant_page_data = _scrape_restaurant_page(restaurant_url, headers)
 
         restaurant_data.append({
             "Name": name,
@@ -80,11 +142,12 @@ def _scrape_single_page(url: str, headers: dict) -> Tuple[List[Dict[str, str]], 
             "City": city,
             "Price Range": price,
             "Cuisine": cuisine,
-            "Description": "",
-            "Address": "",
-            "Coordinates": "",
+            "Description": restaurant_page_data['Description'],
+            "Address": restaurant_page_data['Address'],
+            "Latitude": restaurant_page_data['Latitude'],
+            "Longitude": restaurant_page_data['Longitude'],
             "Michelin URL": "",
-            "Website URL": ""
+            "Website URL": restaurant_page_data['Website URL']
         })
 
     print(f"   Found {len(restaurant_data)} names and details on this page.")
@@ -122,7 +185,7 @@ def scrape_michelin_data(start_url: str) -> pd.DataFrame:
     Scrapes restaurant data (Name, City, Rating, Address) from all pages
     of a given Michelin Guide URL and returns a Pandas DataFrame.
     """
-    print(f"Starting multi-page scrape from: {start_url}")
+    print(f"Scraping {start_url}")
 
     # Define Request Headers once
     HEADERS = {
@@ -139,7 +202,7 @@ def scrape_michelin_data(start_url: str) -> pd.DataFrame:
         print(f"\n--- Processing Page {page_count} ---")
 
         # Use the helper function for the single page scrape
-        restaurant_list_on_page, next_url = _scrape_single_page(current_url, HEADERS)
+        restaurant_list_on_page, next_url = _scrape_results_single_page(current_url, HEADERS)
 
         if not restaurant_list_on_page and page_count == 1:
             print("Initial page failed to extract data. Cannot continue.")
@@ -157,7 +220,7 @@ def scrape_michelin_data(start_url: str) -> pd.DataFrame:
 
         # CRITICAL: Rate Limiting
         if current_url:
-            print("Sleeping for 2 seconds to be polite to the server...")
+            print("Waiting for 2 seconds to be polite to the server...")
             time.sleep(2)
 
     # Convert the final list of dictionaries into a DataFrame
@@ -176,12 +239,8 @@ if __name__ == "__main__":
         print(f"\n=== FINAL RESULTS: Found {len(michelin_df)} Total Restaurants ===")
         # Display the first few rows of the DataFrame
         print(michelin_df.head(10).to_markdown(index=False))
-
-        # Example of how to use the data:
-        # print("\nStar Rating Counts:")
-        # print(michelin_df['Rating'].value_counts().to_markdown())
-
-        # Example of saving the data
-        # michelin_df.to_csv("michelin_new_york.csv", index=False)
     else:
         print("\nNo data extracted or DataFrame is empty.")
+
+    # Save outputs
+    michelin_df.to_excel("/Users/jonathanchow/Downloads/michelin_df.xlsx", index=False)
