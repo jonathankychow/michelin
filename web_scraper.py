@@ -7,22 +7,26 @@ import pandas as pd
 import re
 from datetime import datetime
 import os
+import time
 
 # Helper function to parse ratings from restaurant card
 def _parse_rating(rating_span) -> str:
     rating_text = "No Rating"
+    star_count = 0
     if rating_span:
-        image_source = rating_span.select_one('img.michelin-award').get('src', '')
-        if '1star' in image_source:
+        img_list = rating_span.find_all('img', class_='michelin-award')
+        for img in img_list:
+            src = img['src']
+            if 'bib-gourmand' in src:
+                return 'Bib Gourmand'
+            elif '1star' in src:
+                star_count += 1
+        if star_count == 1:
             rating_text = "1 Star"
-        elif '2stars' in image_source:
+        elif star_count == 2:
             rating_text = "2 Stars"
-        elif '3stars' in image_source:
+        elif star_count == 3:
             rating_text = "3 Stars"
-        elif 'bib-gourmand' in image_source:
-            rating_text = "Bib Gourmand"
-        elif 'plate' in image_source:
-            rating_text = "The Plate"
 
     return rating_text
 
@@ -193,8 +197,7 @@ def _scrape_results_single_page(url: str, headers: dict) -> Tuple[List[Dict[str,
     return restaurant_data, next_page_url
 
 
-# --- Main Scraper Function ---
-
+# Main scraper function
 def scrape_michelin_data(start_url: str) -> pd.DataFrame:
     """
     Scrapes restaurant data (Name, City, Rating, Address) from all pages
@@ -244,6 +247,7 @@ def scrape_michelin_data(start_url: str) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
+    start_time = time.perf_counter()
     # URL to scrape (use a region with multiple pages for testing the loop)
     # The default URL often has only one page, so switching to a major city like New York
     TARGET_URL = "https://guide.michelin.com/us/en/kyoto-region/restaurants"
@@ -259,6 +263,11 @@ if __name__ == "__main__":
         print(f"\nNo data extracted or DataFrame is empty.")
 
     # Save outputs
-    timestamp = datetime.now().strftime("%Y%m_d_%H%M%S")
-    filename = f"{CITY_NAME}_{timestamp}.xlsx"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{CITY_NAME}_Michelin_Guide_{timestamp}.xlsx"
     results_df.to_excel(os.path.join("/Users/jonathanchow/Downloads", filename), index=False)
+
+    # Timer
+    end_time = time.perf_counter()
+    elapsed_time = end_time - start_time
+    print(f"Execution took {elapsed_time:.4f} seconds.")
