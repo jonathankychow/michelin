@@ -91,6 +91,10 @@ def _scrape_restaurant_page(url: str, headers: dict):
     restaurant_telephone_tag = soup.find('a',{'data-event': 'CTA_tel'})
     restaurant_telephone = str.split(restaurant_telephone_tag['href'], ':')[1] if restaurant_telephone_tag else ""
 
+    # Get reservation link
+    reservation_link_tag = soup.find('a', class_='js-restaurant-book-btn')
+    reservation_link = reservation_link_tag['href'] if reservation_link_tag else ""
+
     # Get coordinates
     iframe_url = soup.select('iframe')[1]['src']
     latitude, longitude = _scrape_gm_iframe_url(iframe_url)
@@ -100,6 +104,7 @@ def _scrape_restaurant_page(url: str, headers: dict):
         "Description": description,
         "Restaurant Website": restaurant_website,
         "Telephone Number": restaurant_telephone,
+        "Reservation Link": reservation_link,
         "Latitude": latitude,
         "Longitude": longitude
     }
@@ -169,6 +174,7 @@ def _scrape_results_single_page(url: str, headers: dict) -> Tuple[List[Dict[str,
             "Michelin Website": restaurant_url,
             "Restaurant Website": restaurant_page_data['Restaurant Website'],
             "Restaurant Telephone Number": restaurant_page_data['Telephone Number'],
+            "Reservation Link": restaurant_page_data['Reservation Link'],
         })
 
     # 2. Extract 'Next Page' URL (Robust Logic for Pagination)
