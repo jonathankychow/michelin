@@ -5,6 +5,8 @@ from typing import List, Tuple, Optional, Dict, Any
 from urllib.parse import urljoin, parse_qs, urlparse
 import pandas as pd
 import re
+from datetime import datetime
+import os
 
 # Helper function to parse ratings from restaurant card
 def _parse_rating(rating_span) -> str:
@@ -53,8 +55,6 @@ def _scrape_gm_iframe_url(url: str):
 
 # Helper function to scrape data from restaurant page
 def _scrape_restaurant_page(url: str, headers: dict):
-    print(f"\tScraping restaurant page: {url}")
-
     # Query URL
     try:
         response = requests.get(url, headers=headers, timeout=15)
@@ -79,6 +79,14 @@ def _scrape_restaurant_page(url: str, headers: dict):
     description_tag = soup.select_one('div.data-sheet__description')
     description = description_tag.get_text(strip=True) if description_tag else ""
 
+    # Get restaurant url
+    restaurant_website_tag = soup.find('a',{'data-event': 'CTA_website'})
+    restaurant_website = restaurant_website_tag['href'] if restaurant_website_tag else ""
+
+    # Get restaurant phone number
+    restaurant_telephone_tag = soup.find('a',{'data-event': 'CTA_tel'})
+    restaurant_telephone = str.split(restaurant_telephone_tag['href'], ':')[1] if restaurant_telephone_tag else ""
+
     # Get coordinates
     iframe_url = soup.select('iframe')[1]['src']
     latitude, longitude = _scrape_gm_iframe_url(iframe_url)
@@ -86,9 +94,10 @@ def _scrape_restaurant_page(url: str, headers: dict):
     return {
         "Address": address,
         "Description": description,
+        "Restaurant Website": restaurant_website,
+        "Telephone Number": restaurant_telephone,
         "Latitude": latitude,
-        "Longitude": longitude,
-        "Website URL": ""
+        "Longitude": longitude
     }
 
 # Helper function to scrape data from a single web page
@@ -123,6 +132,13 @@ def _scrape_results_single_page(url: str, headers: dict) -> Tuple[List[Dict[str,
         name_tag = card.select_one('h3.card__menu-content--title')
         name = name_tag.get_text(strip=True) if name_tag else ""
 
+        # Filter out 4 DC restaurants that appear in each page for some reason
+        if name in ['La\'Shukran', 'Café Riggs', 'Xiquet', 'Rooster & Owl']:
+            continue
+
+        # Print name of restaurant being parsed
+        print(f"\t{name}")
+
         # Parse footer
         footer = card.select('div.card__menu-footer--score')
         city = footer[0].get_text(strip=True) if footer[0] else ""
@@ -146,11 +162,10 @@ def _scrape_results_single_page(url: str, headers: dict) -> Tuple[List[Dict[str,
             "Address": restaurant_page_data['Address'],
             "Latitude": restaurant_page_data['Latitude'],
             "Longitude": restaurant_page_data['Longitude'],
-            "Michelin URL": "",
-            "Website URL": restaurant_page_data['Website URL']
+            "Michelin Website": restaurant_url,
+            "Restaurant Website": restaurant_page_data['Restaurant Website'],
+            "Restaurant Telephone Number": restaurant_page_data['Telephone Number'],
         })
-
-    print(f"   Found {len(restaurant_data)} names and details on this page.")
 
     # 2. Extract 'Next Page' URL (Robust Logic for Pagination)
     pagination_links = soup.select('ul.pagination li a')
@@ -171,9 +186,9 @@ def _scrape_results_single_page(url: str, headers: dict) -> Tuple[List[Dict[str,
             # CRITICAL CHECK: Only proceed if the new URL is genuinely different
             if new_full_url != url:
                 next_page_url = new_full_url
-                print(f"   Potential next URL found: {next_page_url}")
+                print(f"\tPotential next URL found: {next_page_url}")
             else:
-                print("   Next link points to the current URL. Reached the last page.")
+                print("\tNext link points to the current URL. Reached the last page.")
 
     return restaurant_data, next_page_url
 
@@ -220,7 +235,7 @@ def scrape_michelin_data(start_url: str) -> pd.DataFrame:
 
         # CRITICAL: Rate Limiting
         if current_url:
-            print("Waiting for 2 seconds to be polite to the server...")
+            print("Loading next page...")
             time.sleep(2)
 
     # Convert the final list of dictionaries into a DataFrame
@@ -231,16 +246,19 @@ def scrape_michelin_data(start_url: str) -> pd.DataFrame:
 if __name__ == "__main__":
     # URL to scrape (use a region with multiple pages for testing the loop)
     # The default URL often has only one page, so switching to a major city like New York
-    TARGET_URL = "https://guide.michelin.com/us/en/nara-region/restaurants"
+    TARGET_URL = "https://guide.michelin.com/us/en/kyoto-region/restaurants"
+    CITY_NAME = 'Kyoto'
 
-    michelin_df = scrape_michelin_data(TARGET_URL)
+    results_df = scrape_michelin_data(TARGET_URL)
 
-    if not michelin_df.empty:
-        print(f"\n=== FINAL RESULTS: Found {len(michelin_df)} Total Restaurants ===")
+    if not results_df.empty:
+        print(f"\n=== FINAL RESULTS: Found {len(results_df)} Total Restaurants ===")
         # Display the first few rows of the DataFrame
-        print(michelin_df.head(10).to_markdown(index=False))
+        print(results_df.head(5).to_markdown(index=False))
     else:
-        print("\nNo data extracted or DataFrame is empty.")
+        print(f"\nNo data extracted or DataFrame is empty.")
 
     # Save outputs
-    michelin_df.to_excel("/Users/jonathanchow/Downloads/michelin_df.xlsx", index=False)
+    timestamp = datetime.now().strftime("%Y%m_d_%H%M%S")
+    filename = f"{CITY_NAME}_{timestamp}.xlsx"
+    results_df.to_excel(os.path.join("/Users/jonathanchow/Downloads", filename), index=False)
